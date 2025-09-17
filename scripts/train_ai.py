@@ -41,8 +41,8 @@ EPS_END = 0.01
 EPS_DECAY = 0.995
 LEARNING_RATE = 0.001
 NUM_PLAYERS = 4
-HISTORY_LENGTH = 8
-ACTION_SIZE = 3  # アクションの数
+HISTORY_LENGTH = 48
+ACTION_SIZE = len(Action)  # アクションの数
 # Opponent hand prediction adds 32 values per opponent (2 cards * 16 ranks)
 STATE_SIZE = 35 + (NUM_PLAYERS + ACTION_SIZE) * HISTORY_LENGTH + (NUM_PLAYERS - 1) * 32
 
