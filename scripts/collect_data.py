@@ -18,9 +18,15 @@ from typing import TypedDict
 
 import numpy as np
 import torch
-import torch.nn as nn
+from train_ai import (
+    ACTION_SIZE,
+    NUM_PLAYERS,
+    STATE_SIZE,
+    DecisionTransformer,
+    get_vector,
+)
 
-from one_o_one.game import Action, Card, State, action_mask, reset, step
+from one_o_one.game import Action, State, action_mask, reset, step
 
 logger = logging.getLogger(__name__)
 
@@ -30,11 +36,6 @@ MODEL_PATH = PROJECT_ROOT / "models" / "101_transformer.pth"
 OUTPUT_DATA_PATH = PROJECT_ROOT / "data" / "game_data_for_spectate.json"
 
 NUM_GAMES = 1  # 生成するゲーム数
-NUM_PLAYERS = 4
-HISTORY_LENGTH = 8
-ACTION_SIZE = 3
-# Opponent hand prediction adds 32 values per opponent (2 cards * 16 ranks)
-STATE_SIZE = 35 + (NUM_PLAYERS + ACTION_SIZE) * HISTORY_LENGTH + (NUM_PLAYERS - 1) * 32
 
 
 # --- AIモデルと状態ベクトル化関数 (train_ai.pyから再利用) ---
@@ -55,88 +56,6 @@ class LogEntry(TypedDict):
     penalty: int
     lp_before_json: list[int]
     hands_before_json: list[list[str]]
-
-
-def _to_one_hot(num: int, max_val: int) -> list[float]:
-    """指定された値をOne-Hotエンコーディングする。"""
-    return [1.0 if i == num else 0.0 for i in range(max_val)]
-
-
-def _rank_value(card: Card | None) -> int:
-    return int(card.rank) if card is not None else 0
-
-
-def encode_state(s: State) -> np.ndarray:
-    """単一のゲーム状態をベクトルに変換する。"""
-    me = s.players[s.public.turn]
-    hand_vec = _to_one_hot(_rank_value(me.hand[0]), 16) + _to_one_hot(
-        _rank_value(me.hand[1]), 16
-    )
-    total_vec = [s.public.total / 101.0]
-    dir_vec = [1.0 if s.public.direction == 1 else 0.0]
-    penalty_vec = [(s.public.penalty_level - 1) / 5.0]
-    history_vec: list[float] = []
-    recent = s.public.history[-HISTORY_LENGTH:]
-    for player_idx, act in recent:
-        history_vec.extend(_to_one_hot(player_idx, NUM_PLAYERS))
-        history_vec.extend(_to_one_hot(act, ACTION_SIZE))
-    missing = HISTORY_LENGTH - len(recent)
-    history_vec.extend([0.0] * (missing * (NUM_PLAYERS + ACTION_SIZE)))
-
-    # During training the model also receives opponent hand predictions.
-    # These weights are not available when running this script, so we pad
-    # the state vector with zeros for these features to match the expected
-    # dimensionality.
-    opponent_pred = [0.0] * ((NUM_PLAYERS - 1) * 32)
-
-    state_vector = np.array(
-        hand_vec + total_vec + dir_vec + penalty_vec + history_vec + opponent_pred,
-        dtype=np.float32,
-    )
-    return state_vector
-
-
-def get_vector(
-    states: list[State], actions: list[int], rewards: list[float]
-) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """ゲーム開始からの状態・行動・報酬のシーケンスを返す。"""
-    state_vecs = [encode_state(st) for st in states]
-    action_seq = actions + [0]
-    reward_seq = rewards + [0.0]
-    return (
-        np.array(state_vecs, dtype=np.float32),
-        np.array(action_seq, dtype=np.int64),
-        np.array(reward_seq, dtype=np.float32),
-    )
-
-
-class DecisionTransformer(nn.Module):
-    """状態・行動・報酬の系列から次の行動を予測するTransformerモデル。"""
-
-    def __init__(self, state_size: int, action_size: int, hidden_size: int = 128):
-        super().__init__()
-        self.state_embed = nn.Linear(state_size, hidden_size)
-        self.action_embed = nn.Embedding(action_size, hidden_size)
-        self.reward_embed = nn.Linear(1, hidden_size)
-        encoder_layer = nn.TransformerEncoderLayer(d_model=hidden_size, nhead=8)
-        self.encoder = nn.TransformerEncoder(encoder_layer, num_layers=2)
-        self.predict_head = nn.Linear(hidden_size, action_size)
-
-    def forward(
-        self,
-        states: torch.Tensor,
-        actions: torch.Tensor,
-        rewards: torch.Tensor,
-    ) -> torch.Tensor:
-        """各時刻の状態・行動・報酬から次の行動のロジットを計算する。"""
-        state_tokens = self.state_embed(states)
-        action_tokens = self.action_embed(actions)
-        reward_tokens = self.reward_embed(rewards.unsqueeze(-1))
-        tokens = state_tokens + action_tokens + reward_tokens
-        tokens = tokens.unsqueeze(1)  # (T, 1, hidden)
-        out = self.encoder(tokens)
-        logits: torch.Tensor = self.predict_head(out.squeeze(1))
-        return logits
 
 
 class AIAgent:
