@@ -34,7 +34,7 @@ EPISODE_DATA_DIR = PROJECT_ROOT / "data" / "episodes"
 MODEL_SAVE_DIR = PROJECT_ROOT / "models"
 
 # 訓練パラメータ
-NUM_EPISODES = 1  # 訓練エピソード数
+NUM_EPISODES = 10000  # 訓練エピソード数
 REPLAY_BUFFER_SIZE = 10000  # リプレイバッファのサイズ
 EPS_START = 1.0  # ε-greedy法の開始ε
 EPS_END = 0.01
@@ -53,7 +53,7 @@ PUBLIC_STATE_SIZE = 3 + (NUM_PLAYERS + ACTION_SIZE) * HISTORY_LENGTH
 # --- 状態のベクトル化 ---
 
 
-def _to_one_hot(num: int, max_val: int) -> list[float]:
+def to_one_hot(num: int, max_val: int) -> list[float]:
     """指定された値をOne-Hotエンコーディングする。"""
     return [1.0 if i == num else 0.0 for i in range(max_val)]
 
@@ -65,7 +65,7 @@ def _rank_value(card: Card | None) -> int:
 def encode_state(s: State) -> np.ndarray:
     """単一のゲーム状態をベクトルに変換する。"""
     me = s.players[s.public.turn]
-    hand_vec = _to_one_hot(_rank_value(me.hand[0]), 16) + _to_one_hot(
+    hand_vec = to_one_hot(_rank_value(me.hand[0]), 16) + to_one_hot(
         _rank_value(me.hand[1]), 16
     )
     total_vec = [s.public.total / 101.0]
@@ -74,8 +74,8 @@ def encode_state(s: State) -> np.ndarray:
     history_vec: list[float] = []
     recent = s.public.history[-HISTORY_LENGTH:]
     for player_idx, act in recent:
-        history_vec.extend(_to_one_hot(player_idx, NUM_PLAYERS))
-        history_vec.extend(_to_one_hot(act, ACTION_SIZE))
+        history_vec.extend(to_one_hot(player_idx, NUM_PLAYERS))
+        history_vec.extend(to_one_hot(act, ACTION_SIZE))
     missing = HISTORY_LENGTH - len(recent)
     history_vec.extend([0.0] * (missing * (NUM_PLAYERS + ACTION_SIZE)))
 
@@ -94,8 +94,8 @@ def encode_public_state(s: State) -> np.ndarray:
     history_vec: list[float] = []
     recent = s.public.history[-HISTORY_LENGTH:]
     for player_idx, act in recent:
-        history_vec.extend(_to_one_hot(player_idx, NUM_PLAYERS))
-        history_vec.extend(_to_one_hot(act, ACTION_SIZE))
+        history_vec.extend(to_one_hot(player_idx, NUM_PLAYERS))
+        history_vec.extend(to_one_hot(act, ACTION_SIZE))
     missing = HISTORY_LENGTH - len(recent)
     history_vec.extend([0.0] * (missing * (NUM_PLAYERS + ACTION_SIZE)))
     return np.array(total_vec + dir_vec + penalty_vec + history_vec, dtype=np.float32)
@@ -151,7 +151,7 @@ class DecisionTransformer(nn.Module):
         action_tokens = self.action_embed(actions)
         reward_tokens = self.reward_embed(rewards.unsqueeze(-1))
         tokens = state_tokens + action_tokens + reward_tokens
-        tokens = tokens.unsqueeze(0)
+        tokens = tokens.unsqueeze(0)  # (1, T, hidden)
         out = self.encoder(tokens)
         logits: torch.Tensor = self.predict_head(out.squeeze(0))
         return logits
@@ -233,9 +233,7 @@ class TransformerAgent:
                 inp = torch.cat(
                     (
                         pub_t,
-                        torch.FloatTensor(_to_one_hot(idx, NUM_PLAYERS)).to(
-                            self.device
-                        ),
+                        torch.FloatTensor(to_one_hot(idx, NUM_PLAYERS)).to(self.device),
                     )
                 )
                 logits = self.opponent_model(inp.unsqueeze(0)).squeeze(0)
@@ -255,9 +253,9 @@ class TransformerAgent:
             self.memory.pop(0)
         public_vec = encode_public_state(final_state)
         for idx, player in enumerate(final_state.players):
-            feature = np.concatenate(
-                [public_vec, _to_one_hot(idx, NUM_PLAYERS)]
-            ).astype(np.float32)
+            feature = np.concatenate([public_vec, to_one_hot(idx, NUM_PLAYERS)]).astype(
+                np.float32
+            )
             label = np.array(
                 [
                     _rank_value(player.hand[0]),
@@ -311,9 +309,14 @@ def main() -> None:
 
     agent = TransformerAgent(STATE_SIZE, ACTION_SIZE)
     model_path = MODEL_SAVE_DIR / "101_transformer.pth"
+
+    # --- 変更点: モデル読み込み処理 ---
+    # 両方のモデルを読み込むように修正
     if model_path.exists():
-        logger.info("Loading model from %s", model_path)
-        agent.model.load_state_dict(torch.load(model_path))
+        logger.info("Loading models from %s", model_path)
+        checkpoint = torch.load(model_path)
+        agent.model.load_state_dict(checkpoint["model_state_dict"])
+        agent.opponent_model.load_state_dict(checkpoint["opponent_model_state_dict"])
 
     all_episode_data = []
 
@@ -357,8 +360,13 @@ def main() -> None:
                 episode_reward,
                 agent.epsilon,
             )
-            # モデルを保存
-            torch.save(agent.model.state_dict(), model_path)
+            torch.save(
+                {
+                    "model_state_dict": agent.model.state_dict(),
+                    "opponent_model_state_dict": agent.opponent_model.state_dict(),
+                },
+                model_path,
+            )
 
             if all_episode_data:
                 df = pd.DataFrame(all_episode_data)
@@ -366,7 +374,13 @@ def main() -> None:
                 all_episode_data = []
 
     logger.info("Training finished.")
-    torch.save(agent.model.state_dict(), model_path)
+    torch.save(
+        {
+            "model_state_dict": agent.model.state_dict(),
+            "opponent_model_state_dict": agent.opponent_model.state_dict(),
+        },
+        model_path,
+    )
     logger.info("Final model saved to %s", model_path)
 
 

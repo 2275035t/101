@@ -18,11 +18,16 @@ from typing import TypedDict
 
 import numpy as np
 import torch
+
 from train_ai import (
     ACTION_SIZE,
     NUM_PLAYERS,
+    PUBLIC_STATE_SIZE,
     STATE_SIZE,
     DecisionTransformer,
+    OpponentModel,
+    to_one_hot,
+    encode_public_state,
     get_vector,
 )
 
@@ -64,43 +69,50 @@ class AIAgent:
     def __init__(self, model_path: Path):
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.model = DecisionTransformer(STATE_SIZE, ACTION_SIZE).to(self.device)
+        self.opponent_model = OpponentModel(PUBLIC_STATE_SIZE + NUM_PLAYERS).to(
+            self.device
+        )
 
         if not model_path.exists():
             raise FileNotFoundError(f"学習済みモデルが見つかりません: {model_path}")
 
         logger.info("Loading model from: %s", model_path)
 
-        loaded = torch.load(model_path, map_location=self.device)
+        checkpoint = torch.load(model_path, map_location=self.device)
 
-        # Support a variety of saved formats.
-        if isinstance(loaded, dict):
-            if "model_state_dict" in loaded:
-                state_dict = loaded["model_state_dict"]
-            elif "state_dict" in loaded:
-                state_dict = loaded["state_dict"]
-            elif "policy_net" in loaded and isinstance(loaded["policy_net"], dict):
-                state_dict = loaded["policy_net"]
-            else:
-                state_dict = loaded
-        else:
-            state_dict = None
-            for obj in (
-                getattr(loaded, "model", None),
-                getattr(loaded, "policy_net", None),
-                loaded,
-            ):
-                if obj is None:
-                    continue
-                try:
-                    state_dict = obj.state_dict()
-                    break
-                except Exception:
-                    continue
-            if state_dict is None:
-                raise AttributeError("Loaded object does not contain a state_dict")
+        if (
+            "model_state_dict" not in checkpoint
+            or "opponent_model_state_dict" not in checkpoint
+        ):
+            raise ValueError(
+                "Cannot collect data. The model file is in an old format. Please retrain the agent with the updated train_ai.py script."
+            )
 
-        self.model.load_state_dict(state_dict)
+        self.model.load_state_dict(checkpoint["model_state_dict"])
+        self.opponent_model.load_state_dict(checkpoint["opponent_model_state_dict"])
+
         self.model.eval()
+        self.opponent_model.eval()
+
+    def predict_opponents(self, state: State) -> np.ndarray:
+        """現在の状態から他プレイヤーの手札分布を推定する。"""
+        public_vec = encode_public_state(state)
+        preds: list[np.ndarray] = []
+        with torch.no_grad():
+            pub_t = torch.FloatTensor(public_vec).to(self.device)
+            for idx in range(NUM_PLAYERS):
+                if idx == state.public.turn:
+                    continue
+                inp = torch.cat(
+                    (
+                        pub_t,
+                        torch.FloatTensor(to_one_hot(idx, NUM_PLAYERS)).to(self.device),
+                    )
+                )
+                logits = self.opponent_model(inp.unsqueeze(0)).squeeze(0)
+                probs = torch.softmax(logits, dim=-1)
+                preds.append(probs.view(-1).cpu().numpy())
+        return np.concatenate(preds)
 
     def select_action(
         self,
@@ -141,7 +153,7 @@ def collect_game_data(agent: AIAgent, num_games: int) -> list[LogEntry]:
         while not done:
             state_history.append(s)
             state_seq, action_seq, reward_seq = get_vector(
-                state_history, action_history, reward_history
+                state_history, action_history, reward_history, agent=agent
             )
             action = agent.select_action(s, state_seq, action_seq, reward_seq)
             next_s, reward, done, _ = step(s, action)
@@ -203,11 +215,11 @@ def main() -> None:
         logger.info("Successfully collected and saved data for %d game(s).", NUM_GAMES)
         logger.info("Data saved to: %s", OUTPUT_DATA_PATH)
 
-    except FileNotFoundError as e:
+    except (FileNotFoundError, ValueError) as e:
         logger.error("Error: %s", e)
         logger.error(
             "Please run the training script (train_ai.py) first to generate the "
-            "model file."
+            "model file in the correct format."
         )
     except Exception as e:
         logger.error("An unexpected error occurred: %s", e)
