@@ -134,7 +134,9 @@ class DecisionTransformer(nn.Module):
         self.state_embed = nn.Linear(state_size, hidden_size)
         self.action_embed = nn.Embedding(action_size, hidden_size)
         self.reward_embed = nn.Linear(1, hidden_size)
-        encoder_layer = nn.TransformerEncoderLayer(d_model=hidden_size, nhead=8)
+        encoder_layer = nn.TransformerEncoderLayer(
+            d_model=hidden_size, nhead=8, batch_first=True
+        )
         self.encoder = nn.TransformerEncoder(encoder_layer, num_layers=2)
         self.predict_head = nn.Linear(hidden_size, action_size)
 
@@ -149,9 +151,9 @@ class DecisionTransformer(nn.Module):
         action_tokens = self.action_embed(actions)
         reward_tokens = self.reward_embed(rewards.unsqueeze(-1))
         tokens = state_tokens + action_tokens + reward_tokens
-        tokens = tokens.unsqueeze(1)  # (T, 1, hidden)
+        tokens = tokens.unsqueeze(0)
         out = self.encoder(tokens)
-        logits: torch.Tensor = self.predict_head(out.squeeze(1))
+        logits: torch.Tensor = self.predict_head(out.squeeze(0))
         return logits
 
 
@@ -358,10 +360,10 @@ def main() -> None:
             # モデルを保存
             torch.save(agent.model.state_dict(), model_path)
 
-            # エピソードデータをParquet形式で保存
-            df = pd.DataFrame(all_episode_data)
-            df.to_parquet(EPISODE_DATA_DIR / f"episode_data_{episode}.parquet")
-            all_episode_data = []
+            if all_episode_data:
+                df = pd.DataFrame(all_episode_data)
+                df.to_parquet(EPISODE_DATA_DIR / f"episode_data_{episode}.parquet")
+                all_episode_data = []
 
     logger.info("Training finished.")
     torch.save(agent.model.state_dict(), model_path)
