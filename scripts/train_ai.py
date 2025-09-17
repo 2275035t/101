@@ -34,7 +34,7 @@ EPISODE_DATA_DIR = PROJECT_ROOT / "data" / "episodes"
 MODEL_SAVE_DIR = PROJECT_ROOT / "models"
 
 # 訓練パラメータ
-NUM_EPISODES = 10000  # 訓練エピソード数
+NUM_EPISODES = 1  # 訓練エピソード数
 REPLAY_BUFFER_SIZE = 10000  # リプレイバッファのサイズ
 EPS_START = 1.0  # ε-greedy法の開始ε
 EPS_END = 0.01
