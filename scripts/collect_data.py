@@ -26,7 +26,7 @@ from train_ai import (
     get_vector,
 )
 
-from one_o_one.game import Action, State, action_mask, reset, step
+from one_o_one.game import Action, Rank, State, action_mask, reset, step
 
 logger = logging.getLogger(__name__)
 
@@ -72,13 +72,8 @@ class AIAgent:
 
         loaded = torch.load(model_path, map_location=self.device)
 
-        # Support a variety of saved formats.  Some historical training scripts
-        # stored the entire agent object (with attributes like ``policy_net``),
-        # while newer versions save just the model's ``state_dict``.  To keep
-        # this data-collection utility robust, attempt to extract a state
-        # dictionary from whatever object was loaded.
+        # Support a variety of saved formats.
         if isinstance(loaded, dict):
-            # Common case: the raw ``state_dict`` or wrapped in a dictionary.
             if "model_state_dict" in loaded:
                 state_dict = loaded["model_state_dict"]
             elif "state_dict" in loaded:
@@ -88,9 +83,6 @@ class AIAgent:
             else:
                 state_dict = loaded
         else:
-            # Try typical attributes in priority order, guarding against
-            # partially-saved agent objects whose ``state_dict`` may raise if
-            # submodules like ``policy_net`` are missing.
             state_dict = None
             for obj in (
                 getattr(loaded, "model", None),
@@ -157,11 +149,19 @@ def collect_game_data(agent: AIAgent, num_games: int) -> list[LogEntry]:
             reward_history.append(reward)
 
             cur_idx = s.public.turn
+            played = "NONE"
+
             if action in (Action.PLAY_HAND_0, Action.PLAY_HAND_1):
                 card = s.players[cur_idx].hand[action.value]
-                played = card.rank.name if card is not None else "NONE"
-            else:
+                if card is not None:
+                    played = card.rank.name
+            elif action == Action.PLAY_DECK:
                 played = "DECK"
+            elif action in (Action.PLAY_TEN_PLUS, Action.PLAY_TEN_MINUS):
+                played = Rank.R10.name
+            elif action in (Action.PLAY_ACE_ONE, Action.PLAY_ACE_ELEVEN):
+                played = Rank.A.name
+
             log_entry: LogEntry = {
                 "turn": turn,
                 "player": cur_idx,
